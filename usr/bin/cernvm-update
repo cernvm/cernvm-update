@@ -1,0 +1,543 @@
+#!/bin/sh
+
+# Looks for a new available cernvm-system version and steers the update process
+
+set -e
+
+VERSION=0.1
+
+. /etc/cernvm-update/attrib.conf
+TEMP=$(mktemp -d)
+RETVAL=0
+config() {
+
+        #configuration
+        USER_DATABASE="/var/lib/rpm"
+        SYSTEM_DATABASE="/mnt/.ro/cvm3/var/lib/rpm"
+        STATE_DIRECTORY="/etc/cernvm-update/packages"
+        [ -d $STATE_DIRECTORY ] || {
+            mkdir -p $STATE_DIRECTORY
+        }
+}
+
+#(name, database)
+create_spec_file() {
+    rpm --dbpath $2 -q --qf "Name: %{NAME}\n" $1 | cat >$1.spec
+    rpm --dbpath $2 -q --qf "Version: %{VERSION}\n" $1 | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "Release: %{RELEASE}\n" $1 | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "Summary: %{SUMMARY}\n" $1 | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "Group: %{GROUP}\n" $1 | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "License: %{LICENSE}\n" $1 | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "BuildRoot: /tmp/%{NAME}-%{VERSION}-%{RELEASE}\n" $1 | cat >>$1.spec
+    
+    echo '%description' | cat >>$1.spec
+    rpm --dbpath $2 -q --qf "%{DESCRIPTION}\n" $1 | cat >>$1.spec
+    echo '%build' | cat >>$1.spec
+    echo '%install' | cat >>$1.spec
+    echo '%clean' | cat >>$1.spec
+    echo '%files' | cat >>$1.spec
+}
+
+#(new_package, database, updated database)
+register_rpm() {
+    rpm_file=$(create_rpm $1 $2 $3)
+    echo "Database for rpm install is $2 package is $rpm_file"
+    rpm -v --dbpath "$2" -i $rpm_file
+    rpm -v --dbpath "$2" --freshen "$rpm_file"
+    echo "$rpm_file in $2"
+}
+ 
+#(rpm, database)
+create_rpm() {
+    name="$1"
+    database="$2"
+    create_spec_file "$name" " $database"
+    location=$(pwd)     
+    a=`rpmbuild --dbpath "$database" --define "_topdir /tmp" -bb "$location/$name.spec" | grep "Wrote: " | cut -d ':' -f 2 | tr -d ' '`
+    mv "$a" .
+}
+
+#(RWdatabase1, ROdatabase)
+find_new_packages() {
+    echo -n "Reading $1: "
+    rpm --dbpath $1 -qa | cat >'rw.tmp' 
+    print_ok "DONE"
+    echo -n "Reading $2: "
+    rpm --dbpath $2 -qa | cat >'ro.tmp'
+    print_ok "DONE"
+    for package in `cat ro.tmp`; do
+        exists=$(cat 'rw.tmp' | grep -w "$package" || echo -n "")
+        if [ -z "$exists" ]; then
+            echo "$package does not exist in $1"
+            register_rpm $package $1 $2
+        fi
+    done 
+}
+
+diff_databases() {
+    database1=$(mktemp)
+    database2=$(mktemp)
+    echo "Reading $1" > /dev/stderr
+    rpm --dbpath $1 -qa | sort -d | cat >$database1
+    echo "Reading $2" > /dev/stderr
+    rpm --dbpath $2 -qa | sort -d | cat >$database2
+    echo "Read databases"
+    echo "Diffing"
+    diff --normal $database1 $database2 | grep '>' | tr -d '>' | tr -d ' ' | \
+    cat >"$3/user_packages"
+    for line in $(cat $3/user_packages); do
+        echo "PUTTING $line in $3/user_packages"
+        rpm --dbpath $2 -q --qf "%{NAME} = %{VERSION}\n" $line | cat >>$3/user_packages_versions
+    done
+    echo "User packages detected"
+    echo "======================"
+    cat "$3/user_packages"
+}
+
+#called be pre-update function to
+#find the post installation scripts 
+#of the candidate to be upgraded packages
+find_post_installation_scripts() {
+    mkdir $STATE_DIRECTORY/scripts.postinstall
+    postin_location=$1
+    packages_file=$(mktemp)
+    for rpm in $postin_location/*.rpm; do
+        basename "$rpm" ".rpm" >>$packages_file
+    done
+
+    to_be_updated_ro_database_file=$(mktemp)
+    
+    rpm --dbpath $SYSTEM_DATABASE -qa >$to_be_updated_system_database_file
+
+    new_packages_file=$(mktemp)
+    
+    diff --normal $to_be_updated_system_database_file $packages_file |\
+ grep '>' | cut -d ' ' -f 2- >$new_packages_file
+    ifs_b=$IFS
+    IFS=$'\n'
+
+    for rpm_file in $(cat $new_packages_file); do
+        cp $postin_location/$rpm_file $STATE_DIRECTORY/scripts.postinstall/
+    done
+}
+
+#(file 1, file 2)
+find_diffs() {
+    #if the diff_databases method is not appropriate
+    #i.e doesn't work, use this
+    for line in `cat $1`; do
+        exists=$(cat $2 | grep "$line" || echo "")
+        if [ -z "$exists" ]; then
+            echo "$line" | cat >>user_files.txt
+        fi
+    done            
+    
+}
+
+#(user_packages_file, update pack conflicts)
+#format of user_packages_file:
+#<package name> = <version>
+#update pack conflicts file format
+#<package name> [<symbol:{<,>,<=,>=}> <version>]
+check_conflicts() {
+    ifs_b=$IFS
+    IFS=$'\n'
+    for line in `cat $2`; do #for conflict in conflicts
+        line=$(echo "$line" | tr -d ' ')
+        pkg_name=`echo "$line" | cut -d ' ' -f 1 | tr -d ' '`
+        pkg_symbol=`echo "$line" | cut -d ' ' -f 2 | tr -d ' '`
+        pkg_version=`echo "$line" | cut -d ' ' -f 3 | tr -d ' '`
+        [ "$pkg_name" != "$pkg_symbol" ] || {
+            pkg_symbol=""
+            pkg_version=""
+        }
+
+        conflict_line=$(cat $1 | grep -w -E "$pkg_name = .*" || echo -n "")
+        
+        if [ -n "$conflict_line" ]; then
+            echo -n "Checking direct conflict $line: "
+            conflict_version=`echo $conflict_line -d ' ' -f 3`
+            if [ -z $pkg_version ]; then
+                conflict=$(compare_version_compatibility "$conflict_version" "$pkg_version" "$pkg_symbol")
+            else
+                conflict="-1"
+            fi
+            
+            if (($conflict==1 )); then
+                 print_ok "NO CONFLICT"
+            else
+                print_error "CONFLICT"
+                register_bad_user_package "$pkg_name"
+            fi
+        fi
+    done
+    IFS=$ifs_b    
+}
+
+#(user_packages_file, user_provides, update pack provides)
+check_provides() {
+    #search for matching provides among user and system packages
+    #trying to match from user->system assuming the user packages
+    #are less in number, is expected to be faster
+    ifs_b=$IFS
+    IFS=$'\n'
+    for user_pkg_provide in $(cat $2); do
+        user_pkg_name=$(cat $1 | cut -d ' ' -f 1)
+        user_pkg_version=$(cat $1 | cut -d ' ' -f 3)
+        [[ -z $"$user_pkg_version" || "$user_pkg_name" != "$user_pkg_version" ]] || {
+            user_pkg_version=""
+        }
+        normalised_pkg_name=$(echo "$user_pkg_name" | sed -e 's/[()&]/\\&/g')
+
+        system_pkg_exists=$(cat "$3" | grep -w -E "$normalised_pkg_name = .*" || echo -n "")
+
+        echo -n "Checking provided capabilities of user package $user_pkg_name against system packages: "
+        
+        if [ -n "$system_pkg_exists" ]; then
+            system_pkg_version=$(echo "$system_pkg_exists" | cut -d ' ' -f 3)
+            
+            if [[ -z "$system_pkg_version" || "$user_pkg_version" != "$system_pkg_version" ]]; then 
+                equal=$(versions_are_equal "$user_pkg_version" "$user_version")
+            else
+                equal=1
+            fi
+            
+            if [ "$equal" -eq "1" ]; then
+                print_warning "SAME VERSIONS"
+            else
+                print_error "DIFFERENT VERSIONS"
+                bad_package=$(echo $system_pkg_exists | cut -d ' ' -f 1)
+                register_bad_user_package $bad_package
+            fi
+            
+        else
+            print_ok "OK" 
+        fi
+        
+    done
+    
+    IFS=$ifs_b    
+       
+}
+
+register_bad_user_package() {
+    echo $1 | cat >>$TEMP/conflicts
+}
+
+versions_are_equal() {
+    set +e
+    res=$(rpmdev-vercmp "$1" "$2")
+    a=$?
+    set -e
+    if [ "$a" -eq "0" ]; then
+        echo 1
+    else
+        echo -1
+    fi   
+}
+
+#(pckg1, pckg2, cmp_symbol)
+compare_version_compatibility() {
+    set +e
+    res=$(rpmdev-vercmp "$1" "$2")
+    a=$?
+    set -e
+    if [ "$a" -eq "12" ]; then
+        result="<"
+    elif [ "$a" -eq "11" ]; then
+        result=">"
+    else
+        result="="
+    fi
+    
+    check=$(echo $3 | grep "$result" || echo -n "")
+    if [ -z "$check" ]; then
+        echo 1
+    else
+        echo -1
+    fi
+}
+
+print_ok() {
+
+echo -e "[ \e[1;32m $1 \e[0m ]"
+
+}
+
+print_error() {
+    echo -e "[ \e[1;31m $1 \e[0m ]"
+}
+
+print_warning() {
+   echo -e "[ \e[1;33m $1 \e[0m ]"    
+}
+
+remove_packages() {
+    
+    for pkg in `cat $TEMP/conflicts`; do
+        rpm --erase $pkg
+        cat $TEMP/user_packages | grep -v $pkg
+    done
+    
+    echo "Conflicts resolved"
+    rm $TEMP/conflicts
+}
+
+#puts the user packages in the new updated
+#database
+#(update_directory, database)
+patch_update() {
+    
+    #sanity checks#
+    [ $(id -u) -ne 0 ] && {
+        echo "root privileges required"
+        return 1
+    }
+    [ -f $STATE_DIRECTORY/state.info ] || exit 1
+
+    [ $(cat $STATE_DIRECTORY/state.info) -eq $UPDATE_READY ] || exit 1
+    #-----sanity--checks--end-----#
+
+    DATABASE_COPY=$(mktemp -d) 
+    echo "CREATED temporary database $DATABASE_COPY"
+    cp -rv "$SYSTEM_DATABASE" "$DATABASE_COPY"
+    for ipkg in `ls $STATE_DIRECTORY/rpms/*.rpm`; do
+        echo "Re-installing $ipkg"
+        rpm --dbpath $DATABASE_COPY/rpm -i $ipkg || echo $?
+    done
+    echo "Installation done! Copying new database"
+    rm -rf "/var/lib/rpm"
+    cp -rv "$DATABASE_COPY/rpm" "/var/lib/rpm"
+
+    echo "Running post installation scripts: remove hashes from code to enable"
+    #for postin_rpm in $STATE_DIRECTORY/scripts.postinstall/*.rpm; do
+    #    rpm --dbpath <temp-database> -i $postin_rpm
+    #    rm $postin_rpm
+    #done	    
+
+    #clean up
+    rm -rf $STATE_DIRECTORY/rpms
+    rm -rf $STATE_DIRECTORY/scripts.postinstall
+    echo "0" > $STATE_DIRECTORY/state.info
+}
+
+pre_update() {
+    #this must be called
+    #before any update takes place as it
+    #collects all the relevant information
+    #to construct the state of the system necessary
+    #for post-update actions
+
+    #remove any previously added contents in state directory
+    [ ! -d $STATE_DIRECTORY ] || rm -rf $STATE_DIRECTORY/* 
+
+    update_directory=$TEMP
+    cd $update_directory
+    echo "Detecting user packages"
+    diff_databases $SYSTEM_DATABASE $USER_DATABASE $update_directory
+    echo "OK"
+    ifs_b=$IFS
+    IFS=$'\n'
+    
+    #unpack tar ball containing dependencies and provides
+    mkdir $update_directory/update_information
+    cd $update_directory/update_information
+    tar -xf $1
+    tar_name=$(echo $1 | cut -d '/' -f $(($(echo $1 | tr '/' ' ' | wc -w)+1)))
+    tar_directory=$(echo $tar_name | cut -d '.' -f 1-3)
+    echo "Checking conflicts"
+    cat $update_directory/update_information/$tar_directory/conflicts/* | sort -u | cat >$TEMP/conflicts.tmp
+    check_conflicts $update_directory/user_packages_versions $TEMP/conflicts.tmp
+    
+    echo "Checking provides"
+    cat $update_directory/update_information/$tar_directory/provides/* | sort -u | cat >$TEMP/provides.tmp
+    for user_pkg in $(cat $update_directory/user_packages); do
+        [ -z "$user_pkg" ] || {
+            rpm --dbpath "/var/lib/rpm" -q --provides "$user_pkg" | cat >>$TEMP/user_provides.tmp
+        }
+    done
+    check_provides $update_directory/user_packages_versions $TEMP/user_provides.tmp $TEMP/provides.tmp
+
+
+    echo "OK"
+    if [[ -f $TEMP/conflicts && $(cat $TEMP/conflicts | wc -l) -ne 0 ]]; then 
+        echo "The following packages conflict with the system update"
+        echo "------------------------------------------------------"
+        cat $TEMP/conflicts
+        ans=''
+        while [[ "$ans" != "y" && "$ans" != "n" ]]; do
+            read -p "Do you want to remove the packages and proceed with the update?(y/n)" ans
+        done
+        if [ "$ans" = "y" ]; then
+            remove_packages $TEMP/conflicts
+        else
+            echo "Update cancelled"
+            return 1
+        fi
+    fi
+        
+    #create rpm replicas
+    mkdir $update_directory/rpms
+    cd $update_directory/rpms
+    
+    for pkg in `cat $update_directory/user_packages`; do
+        create_rpm $pkg $USER_DATABASE
+    done
+    cd $update_directory
+    [ ! -d $STATE_DIRECTORY/rpms ] || {
+        rm -rf "$STATE_DIRECTORY/rpms"
+    }
+    mv "$update_directory/rpms" "$STATE_DIRECTORY/"
+    
+    #uncomment the two lines below to enable postin functionality
+    #find_post_installation_scripts\
+    # $update_directory/update_information/$tar_directory/scripts.postinstall
+    
+    #on next reboot the post installation method should be called
+    #to register the rpms and run the post installation scripts
+    
+    #clean up
+    rm -rf $update_directory
+    rm -rf $TEMP/*
+    return 0
+}
+
+mount_updates() {
+    
+    tmplocation=$(mktemp -d)
+    mkdir $tmplocation/mountpoint
+    mkdir $tmplocation/cache
+    configuration=$(mktemp)
+    echo "CVMFS_CACHE_BASE=$tmplocation/cache" | cat >$configuration
+    echo "CVMFS_RELOAD_SOCKETS=$tmplocation/cache" | cat >>$configuration
+    echo "CVMFS_SERVER_URL=http://hepvm.cern.ch/cvmfs/cernvm-devel.cern.ch" | cat >>$configuration
+    echo "CVMFS_HTTP_PROXY=DIRECT" | cat >>$configuration
+    echo "CVMFS_KEYS_DIR=/mnt/.rw/aux" | cat >>$configuration
+    cvmfs2 -o config="$configuration" $(attr -qg fqrn /mnt/.ro) "$tmplocation/mountpoint" >/dev/null      
+    echo "$tmplocation/mountpoint"
+}
+
+
+
+usage() {
+  echo "$0 [-c(heck)] [-a(pply)] [-(p)atch]"
+}
+
+version() {
+  echo "$0 version $VERSION"
+}
+
+check() {
+    
+    echo "$AVAILABLE_VERSION"
+    if [ "$AVAILABLE_VERSION" = "$INSTALLED_VERSION" ]; then
+        return $NO_ACTION
+    else
+        return $NEW_UPDATE
+    fi  
+}   
+
+
+mk_update_key() {
+    echo "upd-$INSTALLED_SNAPSHOT-to-$AVAILABLE_SNAPSHOT-$(date -u +%F-%H-%M-%S)"
+}
+
+
+apply() {
+  [ $(id -u) -ne 0 ] && {
+        echo "root privileges required"
+        return 1
+  }
+  if check; then
+    echo "No updates available"
+    return $NO_ACTION
+  fi
+  echo "Mounted on $mountpoint"
+  echo "Initiating pre_update actions"
+  config
+  pre_update "$mountpoint/update-packs/cvm3/$PACKAGE"
+  
+  [ -d /mnt/.rw/context ] || {
+    mkdir /mnt/.rw/context
+  }
+  [ -f /mnt/.rw/context/ucontext ] || {
+    touch /mnt/.rw/context/ucontext
+  }
+  echo "CVMFS_REPOSITORY_TAG=cernvm-system-$AVAILABLE_VERSION" >> /mnt/.rw/context/ucontext
+  
+  rm /mnt/.rw/aux/cvmfs_snapshot
+  echo "$UPDATE_READY" > $STATE_DIRECTORY/state.info
+  echo "Please reboot to apply updates"
+  return $UPDATE_READY
+}
+
+mountpoint=$(mount_updates)
+INSTALLED_VERSION=$(rpm --dbpath /mnt/.ro/cvm3/var/lib/rpm -q --qf "%{VERSION}" cernvm-system)
+AVAILABLE_VERSION=$(cat "$mountpoint/update-packs/cvm3/latest" | grep "version=" | cut -d '=' -f 2)
+PACKAGE=$(cat "$mountpoint/update-packs/cvm3/latest" | grep "update-pack=" | cut -d '=' -f 2)
+
+umount_tmpfs() {
+    fusermount -u "$mountpoint/"
+    rm -rf $(echo "$mountpoint" | cut -d '/' -f 1-3)
+    #echo "keeping $mountpoint for now"
+}
+
+while getopts "capvh" option; do
+  case $option in
+    c)
+      check || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+    ;;
+    a)
+      apply || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+    ;;
+    p)
+      echo "Patching rpm database after update"
+      config
+      patch_update || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+      
+    ;;
+    h)
+      usage || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+    ;;
+    v)
+      version || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+    ;;
+    ?)
+      usage || { 
+          RETVAL=$?
+          umount_tmpfs 
+          break
+      }
+      umount_tmpfs
+    ;;
+  esac
+done
+
+echo "Installed: CernVM $INSTALLED_VERSION" >/dev/stderr
+echo "Available: CernVM $AVAILABLE_VERSION" >/dev/stderr
+exit $RETVAL
