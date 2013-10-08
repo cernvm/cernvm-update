@@ -1,0 +1,28 @@
+#!/bin/bash
+INFO=0
+WARNING=1
+ERROR=2
+ICON_UPDATE='/usr/share/icons/gnome/32x32/status/software-update-available.png'
+ICON_UPDATE_URGENT='/usr/share/icons/gnome/32x32/status/software-update-urgent.png'
+
+. /usr/share/cernvm-update/return_codes
+
+send_notification() {
+    local current_runlevel=$(runlevel | cut -d" " -f2)
+    [ $current_runlevel -eq 5 ] && notify-send --icon="$1" "$2" "$3"
+}
+
+notify() {
+  send_notification "$ICON_UPDATE" "A version of CernVM is available" "CernVM $AVAILABLE_VERSION"
+}
+
+AVAILABLE_VERSION=$(cernvm-update -c)
+return_code=$?
+#echo $code
+#echo "Available VERSION IS $AVAILABLE_VERSION"
+if [ $return_code -eq $RETURN_UPDATE_AVAIL ]; then
+    echo "CernVM $AVAILABLE_VERSION available"
+    notify 0
+elif [ $return_code -ne 0 ]; then
+    notify $code
+fi

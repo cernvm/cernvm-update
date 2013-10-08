@@ -169,6 +169,7 @@ while getopts "cafvh" option; do
           RETVAL=$?
           exit $RETVAL
       }
+      exit 0
     ;;
     f)
       [ $(id -u) -ne 0 ] && die "root permissions required."
