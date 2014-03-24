@@ -9,11 +9,11 @@ ICON_UPDATE_URGENT='/usr/share/icons/gnome/32x32/status/software-update-urgent.p
 
 send_notification() {
     local current_runlevel=$(runlevel | cut -d" " -f2)
-    [ $current_runlevel -eq 5 ] && notify-send --icon="$1" "$2" "$3"
+    [ $current_runlevel -eq 5 ] && notify-send -t 0 --icon="$1" "$2" "$3"
 }
 
 notify() {
-  send_notification "$ICON_UPDATE" "A version of CernVM is available" "CernVM $AVAILABLE_VERSION"
+  send_notification "$ICON_UPDATE" "A new version of CernVM is available" "CernVM $AVAILABLE_VERSION\nRun 'sudo cernvm-update -a' to apply update"
 }
 
 AVAILABLE_VERSION=$(cernvm-update -c)
