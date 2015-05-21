@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION=0.5
+VERSION=0.6
 USER_RPMDB="/var/lib/rpm"
 SYSTEM_RPMDB="/mnt/.ro/cvm3/var/lib/rpm"
 STATE_DIRECTORY="/var/lib/cernvm-update"
@@ -13,9 +13,7 @@ STATE_DIRECTORY="/var/lib/cernvm-update"
 
 
 print_ok() {
-
-echo -e "[ \e[1;32m $1 \e[0m ]"
-
+    echo -e "[ \e[1;32m $1 \e[0m ]"
 }
 
 print_error() {
@@ -23,7 +21,7 @@ print_error() {
 }
 
 print_warning() {
-   echo -e "[ \e[1;33m $1 \e[0m ]"
+    echo -e "[ \e[1;33m $1 \e[0m ]"
 }
 
 
@@ -101,7 +99,8 @@ mount_update_packs() {
     echo "CVMFS_SERVER_URL=$(attr -qg host /mnt/.ro)" >> $cvmfs_conf
     local proxy=$(attr -qg proxy /mnt/.ro)
     [ -z "$proxy" ] && proxy=DIRECT
-    echo "CVMFS_HTTP_PROXY=$proxy" >> $cvmfs_conf
+    [ "x${proxy}" != "xDIRECT" ] && proxy="${proxy};DIRECT"
+    echo "CVMFS_HTTP_PROXY='${proxy}'" >> $cvmfs_conf
     echo "CVMFS_KEYS_DIR=/mnt/.rw/aux/keys/$(attr -qg fqrn /mnt/.ro)" >> $cvmfs_conf
     cvmfs2 -o config="$cvmfs_conf" $(attr -qg fqrn /mnt/.ro) "${tmpdir}/mountpoint" >/dev/null
     echo "${tmpdir}/mountpoint"
@@ -183,6 +182,7 @@ while getopts "cakfvh" option; do
       [ $(id -u) -ne 0 ] && die "root permissions required."
       pre_update
       unpin_snapshot
+      umount_update_packs "$mountpoint"
       echo "Please reboot to make the update effective."
       exit 0
     ;;
@@ -191,14 +191,17 @@ while getopts "cakfvh" option; do
       check >/dev/null || {
         pre_update
         unpin_snapshot
+        umount_update_packs "$mountpoint"
         echo "Please reboot to make the update effective."
         exit 0
       }
+      umount_update_packs "$mountpoint"
       exit 0
     ;;
     k)
       [ $(id -u) -ne 0 ] && die "root permissions required."
       update_kernel
+      umount_update_packs "$mountpoint"
       echo "Please reboot to load the update bootloader uCernVM $AVAILABLE_UCERNVM"
       exit 0
     ;;
