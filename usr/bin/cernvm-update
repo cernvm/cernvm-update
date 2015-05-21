@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION=0.6
+VERSION=0.7
 USER_RPMDB="/var/lib/rpm"
 SYSTEM_RPMDB="/mnt/.ro/cvm3/var/lib/rpm"
 STATE_DIRECTORY="/var/lib/cernvm-update"
