@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION=0.7
+VERSION=0.8
 USER_RPMDB="/var/lib/rpm"
 SYSTEM_RPMDB="/mnt/.ro/cvm3/var/lib/rpm"
 STATE_DIRECTORY="/var/lib/cernvm-update"
@@ -143,6 +143,9 @@ mk_update_key() {
 }
 
 unpin_snapshot() {
+  if [ -f /mnt/.rw/aux/cvmfs_force_tag ]; then
+    mv /mnt/.rw/aux/cvmfs_force_tag "/mnt/.rw/aux/cvmfs_force_tag.$(mk_update_key)"
+  fi
   if [ -f /mnt/.rw/aux/cvmfs_snapshot ]; then
     mv "/mnt/.rw/aux/cvmfs_snapshot" "/mnt/.rw/aux/cvmfs_snapshot.$(mk_update_key)"
   fi
@@ -168,7 +171,7 @@ UPDATE_PACK=$(cat "$mountpoint/update-packs/cvm3/latest" | grep "update-pack=" |
 INSTALLED_UCERNVM=$(cat /mnt/.rw/aux/ucernvm-version)
 AVAILABLE_UCERNVM=$(cat "$mountpoint/update-packs/kernel/latest" | grep "version=" | cut -d '=' -f 2)
 
-while getopts "cakfvh" option; do
+while getopts "cakf:vh" option; do
   case $option in
     c)
       umount_update_packs "$mountpoint"
@@ -180,9 +183,11 @@ while getopts "cakfvh" option; do
     ;;
     f)
       [ $(id -u) -ne 0 ] && die "root permissions required."
+      AVAILABLE_VERSION=$OPTARG
       pre_update
       unpin_snapshot
       umount_update_packs "$mountpoint"
+      echo ${AVAILABLE_VERSION} > /mnt/.rw/aux/cvmfs_force_tag
       echo "Please reboot to make the update effective."
       exit 0
     ;;
