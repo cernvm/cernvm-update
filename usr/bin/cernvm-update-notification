@@ -19,6 +19,7 @@ send_notification() {
 }
 
 notify() {
+  echo "*** CernVM version $AVAILABLE_VERSION is available. Run 'sudo cernvm-update -a' to apply the update." >> /etc/motd  
   send_notification "$ICON_UPDATE" "A new version of CernVM is available" "CernVM $AVAILABLE_VERSION\nRun 'sudo cernvm-update -a' to apply update"
 }
 
@@ -26,9 +27,13 @@ AVAILABLE_VERSION=$(cernvm-update -c)
 return_code=$?
 #echo $code
 #echo "Available VERSION IS $AVAILABLE_VERSION"
+# Clear motd
+sed -i -e '/^\*\*\* /d' /etc/motd
 if [ $return_code -eq $RETURN_UPDATE_AVAIL ]; then
     echo "CernVM $AVAILABLE_VERSION available"
     notify 0
 elif [ $return_code -ne 0 ]; then
     notify $code
 fi
+
+

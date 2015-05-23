@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION=0.8
+VERSION=0.9
 USER_RPMDB="/var/lib/rpm"
 SYSTEM_RPMDB="/mnt/.ro/cvm3/var/lib/rpm"
 STATE_DIRECTORY="/var/lib/cernvm-update"
@@ -197,6 +197,7 @@ while getopts "cakf:vh" option; do
         pre_update
         unpin_snapshot
         umount_update_packs "$mountpoint"
+        sed -i -e '/^\*\*\* /d' /etc/motd
         echo "Please reboot to make the update effective."
         exit 0
       }
