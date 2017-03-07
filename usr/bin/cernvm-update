@@ -96,7 +96,7 @@ mount_update_packs() {
     local cvmfs_conf="${tmpdir}/update-packs.conf"
     echo "CVMFS_CACHE_BASE=${tmpdir}/cache" > $cvmfs_conf
     echo "CVMFS_RELOAD_SOCKETS=${tmpdir}/cache" >> $cvmfs_conf
-    echo "CVMFS_SERVER_URL=$(attr -qg host /mnt/.ro)" >> $cvmfs_conf
+    echo "CVMFS_SERVER_URL='$(attr -qg host_list /mnt/.ro)'" >> $cvmfs_conf
     local proxy=$(attr -qg proxy /mnt/.ro)
     [ -z "$proxy" ] && proxy=DIRECT
     [ "x${proxy}" != "xDIRECT" ] && proxy="${proxy};DIRECT"
