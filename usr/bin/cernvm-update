@@ -97,12 +97,18 @@ mount_update_packs() {
     echo "CVMFS_CACHE_BASE=${tmpdir}/cache" > $cvmfs_conf
     echo "CVMFS_RELOAD_SOCKETS=${tmpdir}/cache" >> $cvmfs_conf
     echo "CVMFS_SERVER_URL='$(attr -qg host_list /mnt/.ro)'" >> $cvmfs_conf
+    echo "CVMFS_TIMEOUT=10" >> $cvmfs_conf
+    echo "CVMFS_TIMEOUT_DIRECT=10" >> $cvmfs_conf
+    echo "CVMFS_LOW_SPEED_LIMIT=1024" >> $cvmfs_conf
+    echo "CVMFS_MAX_RETRIES=0" >> $cvmfs_conf
+    echo "CVMFS_MAX_IPADDR_PER_PROXY=2" >> $cvmfs_conf
+    echo "CVMFS_USYSLOG=/var/log/cernvm-update.cvmfs.log" >> $cvmfs_conf
     local proxy=$(attr -qg proxy /mnt/.ro)
     [ -z "$proxy" ] && proxy=DIRECT
     [ "x${proxy}" != "xDIRECT" ] && proxy="${proxy};DIRECT"
     echo "CVMFS_HTTP_PROXY='${proxy}'" >> $cvmfs_conf
     echo "CVMFS_KEYS_DIR=/mnt/.rw/aux/keys/$(attr -qg fqrn /mnt/.ro)" >> $cvmfs_conf
-    cvmfs2 -o config="$cvmfs_conf" $(attr -qg fqrn /mnt/.ro) "${tmpdir}/mountpoint" >/dev/null
+    cvmfs2 -o config="$cvmfs_conf" $(attr -qg fqrn /mnt/.ro) "${tmpdir}/mountpoint" >>/var/log/cernvm-update.log
     echo "${tmpdir}/mountpoint"
 }
 
